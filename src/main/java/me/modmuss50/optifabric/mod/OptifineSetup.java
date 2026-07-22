@@ -155,70 +155,86 @@ public class OptifineSetup {
 			StartupLog.record("runtime-mod-branch");
 		}
 
+		String namespace = FabricLoader.getInstance().getMappingResolver().getCurrentRuntimeNamespace();
+
 		//A jar without srgs
 		File jarOfTheFree = new File(workDir, "Optifine-jarofthefree.jar");
-		LambdaRebuilder rebuilder = new LambdaRebuilder(minecraftJar.toFile());
+		LambdaRebuilder rebuilder;
 
 		StartupLog.record("runtime-before-devolderfiy");
-		log("De-Volderfiying jar");
+		if ("official".equals(namespace)) {
+			Files.copy(optifineModJar.toPath(), jarOfTheFree.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			rebuilder = null;
+			StartupLog.record("runtime-devolderfiy-skipped-official");
+			log("Generated official-name port does not require legacy jar normalization");
+		} else {
+			log("De-Volderfiying jar");
+			rebuilder = new LambdaRebuilder(minecraftJar.toFile());
+			LambdaRebuilder legacyRebuilder = rebuilder;
 
-		//Find all the SRG named classes and remove them
-		ZipUtils.transform(optifineModJar, new ZipTransformer() {
-			private final boolean correctRecords = FabricLoader.getInstance().isDevelopmentEnvironment();
+			//Find all the SRG named classes and remove them
+			ZipUtils.transform(optifineModJar, new ZipTransformer() {
+				private final boolean correctRecords = FabricLoader.getInstance().isDevelopmentEnvironment();
 
-			@Override
-			public String mapName(ZipEntry entry) {
-				String out = entry.getName();
-				return out.startsWith("notch/") ? out.substring(6) : out;
-			}
+				@Override
+				public String mapName(ZipEntry entry) {
+					String out = entry.getName();
+					return out.startsWith("notch/") ? out.substring(6) : out;
+				}
 
-			@Override
-			public InputStream apply(ZipFile zip, ZipEntry entry) throws IOException {
-				String name = entry.getName();
+				@Override
+				public InputStream apply(ZipFile zip, ZipEntry entry) throws IOException {
+					String name = entry.getName();
 
-				if (!name.startsWith("srg/")) {
-					if (name.endsWith(".class") && !name.startsWith("net/") && !name.startsWith("notch/net/") && !name.startsWith("optifine/") && !name.startsWith("javax/")) {
-						//System.out.println("Finding lambdas to fix in ".concat(name));
-						ClassNode node = ASMUtils.readClass(zip, entry);
+					if (!name.startsWith("srg/")) {
+						if (name.endsWith(".class") && !name.startsWith("net/") && !name.startsWith("notch/net/") && !name.startsWith("optifine/") && !name.startsWith("javax/")) {
+							//System.out.println("Finding lambdas to fix in ".concat(name));
+							ClassNode node = ASMUtils.readClass(zip, entry);
 
-						rebuilder.findLambdas(node);
-						if (correctRecords && (node.access & Opcodes.ACC_RECORD) != 0) {
-							assert node.recordComponents != null: "Record with no components: " + node.name;
-							Map<String, Set<String>> descToNames = node.fields.stream().filter(field -> !Modifier.isStatic(field.access)).collect(Collectors.groupingBy(field -> field.desc,
-									Collectors.mapping(field -> FabricLoader.getInstance().getMappingResolver().mapFieldName("official", node.name, field.name, field.desc), Collectors.toSet())));
+							legacyRebuilder.findLambdas(node);
+							if (correctRecords && (node.access & Opcodes.ACC_RECORD) != 0) {
+								assert node.recordComponents != null: "Record with no components: " + node.name;
+								Map<String, Set<String>> descToNames = node.fields.stream().filter(field -> !Modifier.isStatic(field.access)).collect(Collectors.groupingBy(field -> field.desc,
+										Collectors.mapping(field -> FabricLoader.getInstance().getMappingResolver().mapFieldName("official", node.name, field.name, field.desc), Collectors.toSet())));
 
-							for (RecordComponentNode component : node.recordComponents) {
-								Set<String> existingNames = descToNames.get(component.descriptor);
+								for (RecordComponentNode component : node.recordComponents) {
+									Set<String> existingNames = descToNames.get(component.descriptor);
 
-								if (existingNames != null && existingNames.contains(component.name)) {
-									String desc = "()".concat(component.descriptor);
-									node.methods.removeIf(method -> method.name.equals(component.name) && desc.equals(method.desc));
+									if (existingNames != null && existingNames.contains(component.name)) {
+										String desc = "()".concat(component.descriptor);
+										node.methods.removeIf(method -> method.name.equals(component.name) && desc.equals(method.desc));
+									}
 								}
 							}
+
+							ClassWriter writer = new ClassWriter(0);
+							node.accept(writer);
+							return new ByteArrayInputStream(writer.toByteArray());
+						} else {
+							return zip.getInputStream(entry);
 						}
-
-						ClassWriter writer = new ClassWriter(0);
-						node.accept(writer);
-						return new ByteArrayInputStream(writer.toByteArray());
 					} else {
-						return zip.getInputStream(entry);
+						return null;
 					}
-				} else {
-					return null;
 				}
-			}
-		}, jarOfTheFree);
+			}, jarOfTheFree);
+			rebuilder.close();
+			log("Finished De-Volderfiying jar");
+		}
 		StartupLog.record("runtime-after-devolderfiy");
-		rebuilder.close();
-		log("Finished De-Volderfiying jar");
 
-		String namespace = FabricLoader.getInstance().getMappingResolver().getCurrentRuntimeNamespace();
 		StartupLog.record("runtime-before-remap");
 		log("Remapping OptiFine from official to " + namespace);
 		File completeJar = new File(workDir, "Optifine-remapped.jar");
-		Path lambdaMappings = writeLambdaMappings(workDir.toPath(), rebuilder);
-		remapOptifineInHelperProcess(jarOfTheFree.toPath(), getLibs(minecraftJar), completeJar.toPath(), lambdaMappings,
-				OptifabricRemapMain.class.getName(), namespace, FabricLoader.getInstance().isDevelopmentEnvironment());
+		if ("official".equals(namespace)) {
+			Files.copy(jarOfTheFree.toPath(), completeJar.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+			StartupLog.record("runtime-remap-skipped-official");
+			log("Runtime already uses official names, copied OptiFine without remapping");
+		} else {
+			Path lambdaMappings = writeLambdaMappings(workDir.toPath(), rebuilder);
+			remapOptifineInHelperProcess(jarOfTheFree.toPath(), getLibs(minecraftJar), completeJar.toPath(), lambdaMappings,
+					OptifabricRemapMain.class.getName(), namespace, FabricLoader.getInstance().isDevelopmentEnvironment());
+		}
 		StartupLog.record("runtime-after-remap");
 		log("Finished remapping OptiFine");
 

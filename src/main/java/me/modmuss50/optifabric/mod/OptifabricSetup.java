@@ -95,6 +95,12 @@ public class OptifabricSetup implements Runnable {
 			return; //Avoid crashing out any other Fabric ASM users
 		}
 
+		if ("official".equals(FabricLoader.getInstance().getMappingResolver().getCurrentRuntimeNamespace())) {
+			StartupLog.record("optifabric-official-namespace-ready");
+			log("Official namespace detected; generated port already contains compatibility adaptations");
+			return;
+		}
+
 		BooleanSupplier particlesPresent = new FeatureFinder() {
 			@Override
 			protected boolean isPresent() {

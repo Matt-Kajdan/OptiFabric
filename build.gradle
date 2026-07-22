@@ -32,6 +32,9 @@ import groovy.json.JsonSlurper
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import org.gradle.api.tasks.bundling.AbstractArchiveTask
 
 apply plugin: net.fabricmc.loom.LoomGradlePlugin
 apply plugin: 'maven-publish'
@@ -51,6 +54,33 @@ if (java21Home) {
 archivesBaseName = project.archives_base_name
 version = project.mod_version
 group = project.maven_group
+
+tasks.withType(AbstractArchiveTask).configureEach {
+	preserveFileTimestamps = false
+	reproducibleFileOrder = true
+}
+
+def normalizeArchive = { File archive ->
+	File normalized = new File(archive.parentFile, "${archive.name}.normalized")
+
+	new ZipFile(archive).withCloseable { input ->
+		new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(normalized))).withCloseable { output ->
+			input.entries().toList().sort { entry -> entry.name }.each { source ->
+				ZipEntry entry = new ZipEntry(source.name)
+				entry.time = 315532800000L // 1980-01-01, the earliest portable ZIP timestamp
+				output.putNextEntry(entry)
+
+				if (!source.directory) {
+					input.getInputStream(source).withCloseable { stream -> stream.transferTo(output) }
+				}
+
+				output.closeEntry()
+			}
+		}
+	}
+
+	Files.move(normalized.toPath(), archive.toPath(), StandardCopyOption.REPLACE_EXISTING)
+}
 
 repositories {
 	mavenCentral()
@@ -176,6 +206,21 @@ sourceSets {
 				exclude 'me/modmuss50/optifabric/compat/**'
 			}
 		}
+		if (project.target_minecraft_version.startsWith('26.3')) {
+			java {
+				exclude 'me/modmuss50/optifabric/mixin/**'
+				exclude 'me/modmuss50/optifabric/mod/CrashReportMixinPlugin.java'
+				exclude 'me/modmuss50/optifabric/mod/DrawContext.java'
+				exclude 'me/modmuss50/optifabric/mod/DrawContextSetup.java'
+				exclude 'me/modmuss50/optifabric/mod/Registries.java'
+				exclude 'me/modmuss50/optifabric/mod/RegistriesSetup.java'
+				exclude 'me/modmuss50/optifabric/mod/Text.java'
+				exclude 'me/modmuss50/optifabric/mod/TextSetup.java'
+			}
+			resources {
+				exclude 'optifabric.mixins.json'
+			}
+		}
 	}
 }
 
@@ -231,9 +276,10 @@ task unzip(type: Copy) {
 
 processResources {
 	inputs.property "version", project.version
+	inputs.property "target_minecraft_version", project.target_minecraft_version
 
 	filesMatching("fabric.mod.json") {
-		expand "version": project.version
+		expand "version": project.version, "target_minecraft_version": project.target_minecraft_version
 	}
 }
 
@@ -309,6 +355,7 @@ task modJar(type: Jar, dependsOn: proguardJar) {
 				return NestedJars.GSON.toJson(json)
 			}
 		}))
+		normalizeArchive(archivePath)
 	}
 }
 
@@ -344,6 +391,7 @@ task libraryJar(type: Jar, dependsOn: proguardJar) {
 				}
 			}
 		}""".stripIndent().getBytes('UTF-8'));
+		normalizeArchive(archivePath)
 	}
 }
 
@@ -354,6 +402,7 @@ remapJar {
 
 	doLast {
 		NestedJars.addJars(archivePath, [libraryJar.archivePath])
+		normalizeArchive(archivePath)
 	}
 }
 

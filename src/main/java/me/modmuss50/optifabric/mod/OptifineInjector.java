@@ -52,6 +52,7 @@ public class OptifineInjector {
 			"net/minecraft/class_4603", List.of("method_24225(Lnet/minecraft/class_1657;)Lnet/minecraft/class_2680;"),
 			"net/minecraft/class_309", List.of("method_1466(JILnet/minecraft/class_11908;)V", "method_1457(JLnet/minecraft/class_11905;)V"));
 	private final ClassCache classCache;
+	private final boolean applyLegacyFixers;
 
 	private static void log(String message) {
 		System.err.println("[OptiFabric] " + message);
@@ -60,6 +61,7 @@ public class OptifineInjector {
 
 	public OptifineInjector(ClassCache classCache) {
 		this.classCache = classCache;
+		this.applyLegacyFixers = !"official".equals(FabricLoader.getInstance().getMappingResolver().getCurrentRuntimeNamespace());
 	}
 
 	public Optional<ClassNode> predictFuture(String className) {
@@ -74,7 +76,7 @@ public class OptifineInjector {
 			log("Patching class " + target.name);
 
 			//Skip applying class patches we veto
-			if (OptifineFixer.INSTANCE.shouldSkip(target.name)) {
+			if (applyLegacyFixers && OptifineFixer.INSTANCE.shouldSkip(target.name)) {
 				StartupLog.record("patch-skip-veto-" + target.name);
 				log("Skipping vetoed class " + target.name);
 				return;
@@ -95,7 +97,7 @@ public class OptifineInjector {
 			StartupLog.record("patch-source-loaded-" + target.name);
 
 			//Patch the class if required
-			OptifineFixer.INSTANCE.getFixers(target.name).forEach(classFixer -> {
+			if (applyLegacyFixers) OptifineFixer.INSTANCE.getFixers(target.name).forEach(classFixer -> {
 				String fixerName = classFixer.getClass().getSimpleName();
 				StartupLog.record("patch-fixer-start-" + target.name + "-" + fixerName);
 				log("Applying fixer " + fixerName + " to " + target.name);
@@ -147,10 +149,25 @@ public class OptifineInjector {
 
 		for (String name : classCache.getClasses()) {
 			StartupLog.record("injector-register-" + name);
+			if (!applyLegacyFixers && !hasMinecraftClass(name)) {
+				log("Defining added class " + name);
+				if (!ClassTinkerers.define(name, classCache.getClass(name))) {
+					throw new IllegalStateException("Added class already defined: " + name);
+				}
+				continue;
+			}
+
 			log("Registering replacement for " + name);
 			ClassTinkerers.addReplacement(name, transformer);
 		}
 		StartupLog.record("injector-setup-end");
+	}
+
+	private static boolean hasMinecraftClass(String name) {
+		return FabricLoader.getInstance().getModContainer("minecraft")
+				.orElseThrow(() -> new IllegalStateException("Minecraft mod container is missing"))
+				.findPath(name + ".class")
+				.isPresent();
 	}
 
 	private static int widerAccess(int origin, int target) {
