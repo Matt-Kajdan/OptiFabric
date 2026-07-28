@@ -2,10 +2,15 @@ package me.modmuss50.optifabric.patcher;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -86,40 +91,50 @@ public class ClassCache {
 			if (classCache.calculateCRC() != expectedCRC) return new ClassCache(null);
 
 			return classCache;
-		} catch (ZipException e) {
-			//InflaterInputStream can throw this when the data is corrupt
+		} catch (EOFException | ZipException e) {
+			//GZIPInputStream and DataInputStream throw these for incomplete or corrupt caches
 			return new ClassCache(null);
 		}
 	}
 
 	public void save(File output) throws IOException {
-		if (output.exists()) {
-			output.delete();
-		}
+		Path outputPath = output.toPath();
+		Path parent = outputPath.toAbsolutePath().getParent();
+		Path temporary = Files.createTempFile(parent, output.getName(), ".tmp");
 
-		try (DataOutputStream dos = new DataOutputStream(new GZIPOutputStream(new FileOutputStream(output)))) {
-			dos.writeChar('E'); //Format version
-			dos.writeLong(calculateCRC()); //Expected CRC to get from fully reading
+		try {
+			try (DataOutputStream dos = new DataOutputStream(new GZIPOutputStream(new FileOutputStream(temporary.toFile())))) {
+				dos.writeChar('E'); //Format version
+				dos.writeLong(calculateCRC()); //Expected CRC to get from fully reading
 
-			//Write the hash
-			dos.writeInt(hash.length);
-			dos.write(hash);
+				//Write the hash
+				dos.writeInt(hash.length);
+				dos.write(hash);
 
-			//Write the number of classes
-			dos.writeInt(classes.size());
-			for (Entry<String, byte[]> clazz : classes.entrySet()) {
-				String name = clazz.getKey();
-				byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
-				byte[] bytes = clazz.getValue();
+				//Write the number of classes
+				dos.writeInt(classes.size());
+				for (Entry<String, byte[]> clazz : classes.entrySet()) {
+					String name = clazz.getKey();
+					byte[] nameBytes = name.getBytes(StandardCharsets.UTF_8);
+					byte[] bytes = clazz.getValue();
 
-				//Write the name
-				dos.writeInt(nameBytes.length);
-				dos.write(nameBytes);
+					//Write the name
+					dos.writeInt(nameBytes.length);
+					dos.write(nameBytes);
 
-				//Write the actual bytes
-				dos.writeInt(bytes.length);
-				dos.write(bytes);
+					//Write the actual bytes
+					dos.writeInt(bytes.length);
+					dos.write(bytes);
+				}
 			}
+
+			try {
+				Files.move(temporary, outputPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+			} catch (AtomicMoveNotSupportedException e) {
+				Files.move(temporary, outputPath, StandardCopyOption.REPLACE_EXISTING);
+			}
+		} finally {
+			Files.deleteIfExists(temporary);
 		}
 	}
 
